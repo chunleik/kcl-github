@@ -19,7 +19,7 @@ class CalculatorError(Exception):
 
 @dataclass(frozen=True)
 class Operator:
-    fn: Callable[[float, float], float]
+    fn: Callable[[float | int, float | int], float | int]
     arity: int = 2
 
 
@@ -35,12 +35,12 @@ class SafeEvaluator(ast.NodeVisitor):
         ast.Mod: Operator(lambda a, b: a % b),
         ast.Pow: Operator(lambda a, b: a**b),
     }
-    UNARY_OPS: dict[type[ast.AST], Callable[[float], float]] = {
+    UNARY_OPS: dict[type[ast.AST], Callable[[float | int], float | int]] = {
         ast.UAdd: lambda a: +a,
         ast.USub: lambda a: -a,
     }
 
-    FUNCS: dict[str, Callable[..., float]] = {
+    FUNCS: dict[str, Callable[..., float | int]] = {
         "sqrt": math.sqrt,
         "sin": math.sin,
         "cos": math.cos,
@@ -113,9 +113,9 @@ class SafeEvaluator(ast.NodeVisitor):
             return self.CONSTS[node.id]
         raise CalculatorError(f"未知变量: {node.id}")
 
-    def visit_Constant(self, node: ast.Constant) -> float:
+    def visit_Constant(self, node: ast.Constant) -> float | int:
         if isinstance(node.value, (int, float)):
-            return float(node.value)
+            return node.value
         raise CalculatorError("仅允许数字常量")
 
     def generic_visit(self, node: ast.AST) -> Any:
@@ -135,6 +135,15 @@ class MCPServer:
         return json.dumps(
             {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}},
             ensure_ascii=False,
+        )
+
+    def _tool_error_result(self, request_id: Any, message: str) -> str:
+        return self._ok(
+            request_id,
+            {
+                "content": [{"type": "text", "text": message}],
+                "isError": True,
+            },
         )
 
     def handle(self, raw: str) -> str | None:
@@ -183,7 +192,7 @@ class MCPServer:
                     return self._err(request_id, -32602, "Unknown tool")
                 expression = (params.get("arguments") or {}).get("expression")
                 if not isinstance(expression, str) or not expression.strip():
-                    return self._err(request_id, -32602, "expression must be non-empty string")
+                    raise CalculatorError("expression must be non-empty string")
                 evaluator = SafeEvaluator(ans=self.last_result)
                 value = evaluator.evaluate(expression)
                 self.last_result = value
@@ -204,6 +213,8 @@ class MCPServer:
 
             return self._err(request_id, -32601, f"Method not found: {method}")
         except CalculatorError as exc:
+            if method == "tools/call":
+                return self._tool_error_result(request_id, str(exc))
             return self._err(request_id, -32000, str(exc))
         except Exception as exc:  # noqa: BLE001
             return self._err(request_id, -32099, f"Internal error: {exc}")
