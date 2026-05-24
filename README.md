@@ -19,6 +19,28 @@
 python3 calculator_mcp.py
 ```
 
+## Docker 镜像
+
+### 本地构建与运行
+
+```bash
+docker build -t calculator-mcp:local .
+docker run --rm -i calculator-mcp:local
+```
+
+### 作为 GitHub Release 的发布内容
+
+仓库新增了 `release-docker` 工作流：当你在 GitHub 发布一个 Release（`published`）时，会自动构建并推送镜像到 GHCR：
+
+- `ghcr.io/<owner>/<repo>:<tag>`
+- `ghcr.io/<owner>/<repo>:latest`
+
+拉取示例：
+
+```bash
+docker pull ghcr.io/<owner>/<repo>:<tag>
+```
+
 ## MCP 交互示例
 
 ### 1) 初始化
