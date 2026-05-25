@@ -78,4 +78,6 @@ docker pull ghcr.io/<owner>/<repo>:<tag>
 3. 检查客户端是否开启了激进的自动重连；必要时先关闭重连再验证。
 4. 若你在自行实现网关代码：为每个新连接创建独立的 Protocol/Server 实例，或在重连前显式 `close()` 旧 transport。
 
+5. 确保服务端协议版本与客户端兼容。当前实现返回 `protocolVersion: "2025-11-25"`，可避免部分客户端在握手后立刻断开并触发反复重连。
+
 > 说明：本仓库的 `calculator_mcp.py` 是 **stdio MCP 服务**，该错误来自 `supergateway` 的连接管理层，而不是计算器求值逻辑本身。

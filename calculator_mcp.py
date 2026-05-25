@@ -123,7 +123,7 @@ class SafeEvaluator(ast.NodeVisitor):
 
 
 class MCPServer:
-    PROTOCOL_VERSION = "2024-11-05"
+    PROTOCOL_VERSION = "2025-11-25"
 
     def __init__(self) -> None:
         self.last_result: float | None = None
