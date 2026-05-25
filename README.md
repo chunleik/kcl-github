@@ -62,3 +62,20 @@ docker pull ghcr.io/<owner>/<repo>:<tag>
 ```
 
 返回文本结果（例如 `24.0`）。
+
+## 与 supergateway 联调排错
+
+如果你在把本服务通过 `supergateway` 暴露为 SSE 时看到如下报错：
+
+- `Error: Already connected to a transport ...`
+
+这通常表示：**同一个 MCP `Server` 实例被重复绑定到了新的 SSE 连接**（例如浏览器/客户端自动重连，或多标签页并发连接）。
+
+可按下面方式规避：
+
+1. 保证同一时刻只有一个 SSE 客户端连接到该网关。
+2. 断开旧连接后再建立新连接（重启 supergateway 进程最直接）。
+3. 检查客户端是否开启了激进的自动重连；必要时先关闭重连再验证。
+4. 若你在自行实现网关代码：为每个新连接创建独立的 Protocol/Server 实例，或在重连前显式 `close()` 旧 transport。
+
+> 说明：本仓库的 `calculator_mcp.py` 是 **stdio MCP 服务**，该错误来自 `supergateway` 的连接管理层，而不是计算器求值逻辑本身。
