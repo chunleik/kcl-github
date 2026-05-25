@@ -1,46 +1,38 @@
 #!/usr/bin/env python3
-"""A high-performance calculator MCP server over stdio (JSON-RPC 2.0)."""
+"""A calculator MCP server — supports both stdio and SSE transports."""
 
 from __future__ import annotations
 
 import ast
-import json
 import math
 import sys
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
-JSON = dict[str, Any]
+from mcp.server.fastmcp import FastMCP
 
 
 class CalculatorError(Exception):
     pass
 
 
-@dataclass(frozen=True)
-class Operator:
-    fn: Callable[[float, float], float]
-    arity: int = 2
-
-
 class SafeEvaluator(ast.NodeVisitor):
     """Safely evaluate arithmetic expressions with selected math functions."""
 
-    BIN_OPS: dict[type[ast.AST], Operator] = {
-        ast.Add: Operator(lambda a, b: a + b),
-        ast.Sub: Operator(lambda a, b: a - b),
-        ast.Mult: Operator(lambda a, b: a * b),
-        ast.Div: Operator(lambda a, b: a / b),
-        ast.FloorDiv: Operator(lambda a, b: a // b),
-        ast.Mod: Operator(lambda a, b: a % b),
-        ast.Pow: Operator(lambda a, b: a**b),
+    BIN_OPS: dict[type[ast.AST], Any] = {
+        ast.Add: lambda a, b: a + b,
+        ast.Sub: lambda a, b: a - b,
+        ast.Mult: lambda a, b: a * b,
+        ast.Div: lambda a, b: a / b,
+        ast.FloorDiv: lambda a, b: a // b,
+        ast.Mod: lambda a, b: a % b,
+        ast.Pow: lambda a, b: a**b,
     }
-    UNARY_OPS: dict[type[ast.AST], Callable[[float], float]] = {
+    UNARY_OPS: dict[type[ast.AST], Any] = {
         ast.UAdd: lambda a: +a,
         ast.USub: lambda a: -a,
     }
 
-    FUNCS: dict[str, Callable[..., float]] = {
+    FUNCS: dict[str, Any] = {
         "sqrt": math.sqrt,
         "sin": math.sin,
         "cos": math.cos,
@@ -57,8 +49,16 @@ class SafeEvaluator(ast.NodeVisitor):
 
     CONSTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 
-    def __init__(self, ans: float | None = None) -> None:
-        self.ans = ans
+    def __init__(self) -> None:
+        self._ans: float | None = None
+
+    @property
+    def ans(self) -> float | None:
+        return self._ans
+
+    @ans.setter
+    def ans(self, value: float) -> None:
+        self._ans = value
 
     def evaluate(self, expression: str) -> float:
         try:
@@ -77,7 +77,7 @@ class SafeEvaluator(ast.NodeVisitor):
         left = self.visit(node.left)
         right = self.visit(node.right)
         try:
-            return op.fn(left, right)
+            return op(left, right)
         except ZeroDivisionError as exc:
             raise CalculatorError("除数不能为0") from exc
         except ValueError as exc:
@@ -106,9 +106,9 @@ class SafeEvaluator(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name) -> float:
         if node.id == "ans":
-            if self.ans is None:
+            if self._ans is None:
                 raise CalculatorError("ans 尚未定义")
-            return self.ans
+            return self._ans
         if node.id in self.CONSTS:
             return self.CONSTS[node.id]
         raise CalculatorError(f"未知变量: {node.id}")
@@ -122,105 +122,41 @@ class SafeEvaluator(ast.NodeVisitor):
         raise CalculatorError(f"不支持的语法节点: {type(node).__name__}")
 
 
-class MCPServer:
-    PROTOCOL_VERSION = "2025-11-25"
+mcp = FastMCP("calculator-mcp", host="0.0.0.0", port=8000)
 
-    def __init__(self) -> None:
-        self.last_result: float | None = None
+_evaluator = SafeEvaluator()
 
-    def _ok(self, request_id: Any, result: Any) -> str:
-        return json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}, ensure_ascii=False)
 
-    def _err(self, request_id: Any, code: int, message: str) -> str:
-        return json.dumps(
-            {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}},
-            ensure_ascii=False,
-        )
+@mcp.tool()
+def calculate(expression: str) -> str:
+    """计算数学表达式。
 
-    def handle(self, raw: str) -> str | None:
-        try:
-            req = json.loads(raw)
-        except json.JSONDecodeError:
-            return self._err(None, -32700, "Parse error")
+    支持运算符: + - * / // % **
+    支持函数: sqrt sin cos tan log log10 exp abs round ceil floor factorial
+    支持常量: pi e
+    支持上次结果: ans
 
-        request_id = req.get("id")
-        method = req.get("method")
-        params = req.get("params", {})
-
-        try:
-            if method == "initialize":
-                return self._ok(
-                    request_id,
-                    {
-                        "protocolVersion": self.PROTOCOL_VERSION,
-                        "serverInfo": {"name": "calculator-mcp", "version": "1.0.0"},
-                        "capabilities": {"tools": {}},
-                    },
-                )
-
-            if method == "tools/list":
-                return self._ok(
-                    request_id,
-                    {
-                        "tools": [
-                            {
-                                "name": "calculate",
-                                "description": "计算数学表达式，支持 + - * / // % **、括号、ans、pi、e 和常见数学函数",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "expression": {"type": "string", "description": "要计算的表达式"}
-                                    },
-                                    "required": ["expression"],
-                                },
-                            }
-                        ]
-                    },
-                )
-
-            if method == "tools/call":
-                if params.get("name") != "calculate":
-                    return self._err(request_id, -32602, "Unknown tool")
-                expression = (params.get("arguments") or {}).get("expression")
-                if not isinstance(expression, str) or not expression.strip():
-                    return self._err(request_id, -32602, "expression must be non-empty string")
-                evaluator = SafeEvaluator(ans=self.last_result)
-                value = evaluator.evaluate(expression)
-                self.last_result = value
-                return self._ok(
-                    request_id,
-                    {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"{value}",
-                            }
-                        ]
-                    },
-                )
-
-            if method == "notifications/initialized":
-                return None
-
-            return self._err(request_id, -32601, f"Method not found: {method}")
-        except CalculatorError as exc:
-            return self._err(request_id, -32000, str(exc))
-        except Exception as exc:  # noqa: BLE001
-            return self._err(request_id, -32099, f"Internal error: {exc}")
-
-    def serve(self) -> None:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            response = self.handle(line)
-            if response is not None:
-                sys.stdout.write(response + "\n")
-                sys.stdout.flush()
+    Args:
+        expression: 要计算的数学表达式
+    """
+    value = _evaluator.evaluate(expression)
+    _evaluator.ans = value
+    return str(value)
 
 
 def main() -> None:
-    MCPServer().serve()
+    transport = "stdio"
+    if len(sys.argv) > 1:
+        transport = sys.argv[1]
+
+    if transport == "sse":
+        print(f"SSE endpoint: http://0.0.0.0:8000/sse")
+        print(f"Messages endpoint: http://0.0.0.0:8000/messages/")
+
+    try:
+        mcp.run(transport=transport)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

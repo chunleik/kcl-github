@@ -16,8 +16,15 @@
 ## 运行
 
 ```bash
-python3 calculator_mcp.py
+# SSE 模式（HTTP，供 Claude Code 等客户端远程连接）
+uv run python calculator_mcp.py sse
+
+# stdio 模式（本地管道，兼容 supergateway 等桥接工具）
+uv run python calculator_mcp.py stdio
 ```
+
+SSE 模式下，服务直接监听 `http://0.0.0.0:8000/sse`，无需 supergateway 桥接。
+可通过环境变量配置：`FASTMCP_HOST`、`FASTMCP_PORT`。
 
 ## Docker 镜像
 
@@ -63,21 +70,20 @@ docker pull ghcr.io/<owner>/<repo>:<tag>
 
 返回文本结果（例如 `24.0`）。
 
-## 与 supergateway 联调排错
+## 接入 Claude Code
 
-如果你在把本服务通过 `supergateway` 暴露为 SSE 时看到如下报错：
+```bash
+claude mcp add -t sse calculator http://localhost:8000/sse
+```
 
-- `Error: Already connected to a transport ...`
+## 与 supergateway 联调（旧方案）
 
-这通常表示：**同一个 MCP `Server` 实例被重复绑定到了新的 SSE 连接**（例如浏览器/客户端自动重连，或多标签页并发连接）。
+> 注意：当前版本已内置 SSE 支持，无需 supergateway 桥接。以下内容仅作为参考保留。
 
-可按下面方式规避：
+如果你仍希望通过 `supergateway` 暴露为 SSE：
 
-1. 保证同一时刻只有一个 SSE 客户端连接到该网关。
-2. 断开旧连接后再建立新连接（重启 supergateway 进程最直接）。
-3. 检查客户端是否开启了激进的自动重连；必要时先关闭重连再验证。
-4. 若你在自行实现网关代码：为每个新连接创建独立的 Protocol/Server 实例，或在重连前显式 `close()` 旧 transport。
+```bash
+npx -y supergateway --stdio "python3 calculator_mcp.py stdio" --port 8000
+```
 
-5. 确保服务端协议版本与客户端兼容。当前实现返回 `protocolVersion: "2025-11-25"`，可避免部分客户端在握手后立刻断开并触发反复重连。
-
-> 说明：本仓库的 `calculator_mcp.py` 是 **stdio MCP 服务**，该错误来自 `supergateway` 的连接管理层，而不是计算器求值逻辑本身。
+supergateway 存在已知 bug：**同一 Server 实例被重复绑定时** 会抛出 `Error: Already connected to a transport ...`。原因是 `stdioToSse.js` 中 `sseTransport.onclose` 在 `server.connect()` 之后才赋值，覆盖了 SDK 内部包装的 `_onclose` 清理回调，导致 `server._transport` 不会被清空。
