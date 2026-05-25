@@ -6,13 +6,22 @@ from __future__ import annotations
 import ast
 import math
 import sys
+from decimal import Decimal, getcontext
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+getcontext().prec = 28
+
 
 class CalculatorError(Exception):
     pass
+
+
+def _to_decimal(value: Any) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
 
 class SafeEvaluator(ast.NodeVisitor):
@@ -25,7 +34,7 @@ class SafeEvaluator(ast.NodeVisitor):
         ast.Div: lambda a, b: a / b,
         ast.FloorDiv: lambda a, b: a // b,
         ast.Mod: lambda a, b: a % b,
-        ast.Pow: lambda a, b: a**b,
+        ast.Pow: lambda a, b: a**b if b == int(b) else _to_decimal(float(a) ** float(b)),
     }
     UNARY_OPS: dict[type[ast.AST], Any] = {
         ast.UAdd: lambda a: +a,
@@ -33,63 +42,64 @@ class SafeEvaluator(ast.NodeVisitor):
     }
 
     FUNCS: dict[str, Any] = {
-        "sqrt": math.sqrt,
-        "sin": math.sin,
-        "cos": math.cos,
-        "tan": math.tan,
-        "log": math.log,
-        "log10": math.log10,
-        "exp": math.exp,
+        "sqrt": lambda x: x.sqrt(),
+        "sin": lambda x: _to_decimal(math.sin(float(x))),
+        "cos": lambda x: _to_decimal(math.cos(float(x))),
+        "tan": lambda x: _to_decimal(math.tan(float(x))),
+        "log": lambda x: _to_decimal(math.log(float(x))),
+        "log10": lambda x: _to_decimal(math.log10(float(x))),
+        "exp": lambda x: _to_decimal(math.exp(float(x))),
         "abs": abs,
         "round": round,
-        "ceil": math.ceil,
-        "floor": math.floor,
-        "factorial": math.factorial,
+        "ceil": lambda x: _to_decimal(math.ceil(x)),
+        "floor": lambda x: _to_decimal(math.floor(x)),
+        "factorial": lambda x: _to_decimal(math.factorial(int(x))),
     }
 
-    CONSTS: dict[str, float] = {"pi": math.pi, "e": math.e}
+    CONSTS: dict[str, Decimal] = {
+        "pi": Decimal("3.14159265358979323846264338327950288419716939937510"),
+        "e": Decimal("2.71828182845904523536028747135266249775724709369995"),
+    }
 
     def __init__(self) -> None:
-        self._ans: float | None = None
+        self._ans: Decimal | None = None
 
     @property
-    def ans(self) -> float | None:
+    def ans(self) -> Decimal | None:
         return self._ans
 
     @ans.setter
-    def ans(self, value: float) -> None:
+    def ans(self, value: Decimal) -> None:
         self._ans = value
 
-    def evaluate(self, expression: str) -> float:
+    def evaluate(self, expression: str) -> Decimal:
         try:
             node = ast.parse(expression, mode="eval")
         except SyntaxError as exc:
             raise CalculatorError(f"表达式语法错误: {exc.msg}") from exc
         result = self.visit(node.body)
-        if isinstance(result, complex):
-            raise CalculatorError("不支持复数运算")
-        return float(result)
+        return _to_decimal(result)
 
-    def visit_BinOp(self, node: ast.BinOp) -> float:
+    def visit_BinOp(self, node: ast.BinOp) -> Decimal:
         op = self.BIN_OPS.get(type(node.op))
         if not op:
             raise CalculatorError("不支持的二元操作符")
         left = self.visit(node.left)
         right = self.visit(node.right)
         try:
-            return op(left, right)
+            return _to_decimal(op(left, right))
         except ZeroDivisionError as exc:
             raise CalculatorError("除数不能为0") from exc
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             raise CalculatorError(str(exc)) from exc
 
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> float:
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> Decimal:
         fn = self.UNARY_OPS.get(type(node.op))
         if not fn:
             raise CalculatorError("不支持的一元操作符")
-        return fn(self.visit(node.operand))
+        return _to_decimal(fn(self.visit(node.operand)))
 
-    def visit_Call(self, node: ast.Call) -> float:
+    def visit_Call(self, node: ast.Call) -> Decimal:
         if not isinstance(node.func, ast.Name):
             raise CalculatorError("仅允许调用白名单函数")
         name = node.func.id
@@ -100,11 +110,11 @@ class SafeEvaluator(ast.NodeVisitor):
         if node.keywords:
             raise CalculatorError("不支持关键字参数")
         try:
-            return float(func(*args))
+            return _to_decimal(func(*args))
         except (ValueError, TypeError, OverflowError) as exc:
             raise CalculatorError(str(exc)) from exc
 
-    def visit_Name(self, node: ast.Name) -> float:
+    def visit_Name(self, node: ast.Name) -> Decimal:
         if node.id == "ans":
             if self._ans is None:
                 raise CalculatorError("ans 尚未定义")
@@ -113,9 +123,9 @@ class SafeEvaluator(ast.NodeVisitor):
             return self.CONSTS[node.id]
         raise CalculatorError(f"未知变量: {node.id}")
 
-    def visit_Constant(self, node: ast.Constant) -> float:
+    def visit_Constant(self, node: ast.Constant) -> Decimal:
         if isinstance(node.value, (int, float)):
-            return float(node.value)
+            return Decimal(str(node.value))
         raise CalculatorError("仅允许数字常量")
 
     def generic_visit(self, node: ast.AST) -> Any:
@@ -141,7 +151,11 @@ def calculate(expression: str) -> str:
     """
     value = _evaluator.evaluate(expression)
     _evaluator.ans = value
-    return str(value)
+    # 去除末尾多余的零
+    result = str(value)
+    if "." in result:
+        result = result.rstrip("0").rstrip(".")
+    return result
 
 
 def main() -> None:
